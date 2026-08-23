@@ -5,11 +5,13 @@ import {
 } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, ArrowRight, BookOpen, Bot, Check, FilePlus2, FolderCog, FolderOpen, GitBranch, Hammer, Info, Layers3, Link2, MousePointer2, Play, Plus, Power, Save, Search, Settings2, SquareTerminal, Trash2, Square } from "lucide-react";
+import { Activity, ArrowRight, BookOpen, Bot, Check, Copy, FilePlus2, FolderCog, FolderOpen, GitBranch, Hammer, Info, Layers3, Link2, MousePointer2, Play, Plus, Power, Save, Search, Settings2, SquareTerminal, Trash2, Square } from "lucide-react";
+import { FitAddon } from "@xterm/addon-fit";
+import { Terminal } from "@xterm/xterm";
 import "@xyflow/react/dist/style.css";
 import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
-import { chooseDirectory, closeAgent, interruptAgent, openAgent, openPlugin, openWorkspace, saveWorkspaceFlow, scanWorkspace, startupWorkspace, validateWorkspaceTarget, writeAgent, type AgentData } from "./backend";
+import { chooseDirectory, closeAgent, findCodexSession, interruptAgent, openAgent, openPlugin, openWorkspace, saveWorkspaceFlow, scanWorkspace, startupWorkspace, validateWorkspaceTarget, writeAgent, type AgentData } from "./backend";
 import { demoFlow, plugins } from "./data";
 import type { FlowDocument, FlowEdge, FlowEdgeData, FlowNode, FlowNodeData, NodeKind, Relation, WorkspaceActivity, WorkspaceFileRecord, WorkspaceSnapshot } from "./types";
 
@@ -46,10 +48,39 @@ function workspaceFlow(workspace: WorkspaceSnapshot): FlowDocument {
   };
 }
 
+function NodeTerminal({ nodeId, data, active }: { nodeId: string; data: FlowNodeData; active: boolean }) {
+  const host = useRef<HTMLDivElement>(null);
+  const terminalRef = useRef<Terminal | null>(null);
+  useEffect(() => {
+    if (!active || !host.current || terminalRef.current) return;
+    const terminal = new Terminal({
+      cursorBlink: true, convertEol: true, scrollback: 1200,
+      fontFamily: "Cascadia Mono, Consolas, monospace", fontSize: 10,
+      theme: { background: "#0b121b", foreground: "#cbd8e8", cursor: "#83aaff", selectionBackground: "#29456b" },
+    });
+    const fit = new FitAddon();
+    terminal.loadAddon(fit);
+    terminal.open(host.current);
+    requestAnimationFrame(() => fit.fit());
+    if (data.agentOutput) terminal.write(data.agentOutput.replace(/\n/g, "\r\n"));
+    const outputListener = (event: Event) => {
+      const detail = (event as CustomEvent<{ nodeId: string; data: number[] }>).detail;
+      if (detail.nodeId === nodeId) terminal.write(Uint8Array.from(detail.data));
+    };
+    const inputListener = (value: string) => window.dispatchEvent(new CustomEvent("flow-node-terminal-input", { detail: { nodeId, input: value } }));
+    const dataDisposable = terminal.onData(inputListener);
+    window.addEventListener("flow-node-output", outputListener);
+    terminalRef.current = terminal;
+    return () => { dataDisposable.dispose(); window.removeEventListener("flow-node-output", outputListener); terminal.dispose(); terminalRef.current = null; };
+  }, [active, nodeId]);
+  return <div className={`node-terminal ${active ? "active" : ""}`} ref={host} />;
+}
+
 function FlowNodeCard({ id, data, selected }: NodeProps<FlowNode>) {
   const Icon = nodeIcons[data.kind];
   const agentActive = data.agentStatus === "connected" || data.agentStatus === "opening" || data.agentStatus === "waiting";
   const runNode = (event: React.MouseEvent) => { event.stopPropagation(); window.dispatchEvent(new CustomEvent("flow-node-run", { detail: { nodeId: id } })); };
+  const stopNode = (event: React.MouseEvent) => { event.stopPropagation(); window.dispatchEvent(new CustomEvent("flow-node-stop", { detail: { nodeId: id } })); };
   const sendNodeInput = (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); event.stopPropagation(); const input = new FormData(event.currentTarget).get("node-input")?.toString() ?? ""; if (input.trim()) { window.dispatchEvent(new CustomEvent("flow-node-input", { detail: { nodeId: id, input } })); event.currentTarget.reset(); } };
   return <div className={`flow-node-card kind-${data.kind} ${selected ? "is-selected" : ""} ${data.status === "error" ? "needs-attention" : ""}`}>
     <Handle className="flow-handle input-handle" type="target" position={Position.Left} id="in" title="输入连接点" />
@@ -61,8 +92,9 @@ function FlowNodeCard({ id, data, selected }: NodeProps<FlowNode>) {
       <p className="node-path">{data.path || "未绑定本地路径"}</p>
       <p className="node-summary">{data.summary}</p>
       <div className="node-io"><span><b>输入</b>{data.input || "—"}</span><ArrowRight size={13} /><span><b>输出</b>{data.output || "—"}</span></div>
-      <div className="node-agent-head"><span><Bot size={11} />{data.agentStatus === "waiting" ? "等待人工处理" : data.agentStatus === "connected" ? "AI 会话" : "节点执行"}</span><button className="node-run-button" onClick={runNode} title={agentActive ? "中断节点会话" : "发送到所选 AI 执行"}>{agentActive ? <Square size={11} /> : <Play size={11} />}</button></div>
-      {data.agentOutput && <pre className="node-agent-output">{data.agentOutput.slice(-900)}</pre>}
+      <div className="node-agent-head"><span><Bot size={11} />{data.agentStatus === "waiting" ? "等待人工处理" : data.agentStatus === "connected" ? "WSL Codex 终端" : "节点终端"}</span><span className="node-agent-actions"><button className="node-run-button" onClick={runNode} title="发送拼接后的 Flow 提示词"><Play size={11} /></button>{agentActive && <button className="node-stop-button" onClick={stopNode} title="发送 Ctrl-C，中断当前任务但保留终端"><Square size={10} /></button>}</span></div>
+      {data.codexSessionId && <div className="node-session-id" title={`codex_micu resume ${data.codexSessionId}`}><span>会话</span><code>{data.codexSessionId}</code><button onClick={(event) => { event.stopPropagation(); void navigator.clipboard?.writeText(`codex_micu resume ${data.codexSessionId}`); }} title="复制 resume 命令"><Copy size={10} /></button></div>}
+      <NodeTerminal nodeId={id} data={data} active={agentActive} />
       {agentActive && <form className="node-agent-input" onSubmit={sendNodeInput}><input name="node-input" placeholder="需要人工输入时在这里回复" onClick={(event) => event.stopPropagation()} /><button title="发送人工回复"><ArrowRight size={11} /></button></form>}
     </div>
     <Handle className="flow-handle output-handle" type="source" position={Position.Right} id="out" title="输出连接点" />
@@ -98,7 +130,7 @@ function App() {
   const [workspaceLoaded, setWorkspaceLoaded] = useState(!desktop);
   const [notice, setNotice] = useState(desktop ? "请选择工作区" : "浏览器预览模式");
   const [search, setSearch] = useState("");
-  const [agentChoice, setAgentChoice] = useState<"none" | "codex_micu">("none");
+  const [agentChoice, setAgentChoice] = useState<"none" | "codex_micu">("codex_micu");
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFileRecord[]>([]);
   const [activities, setActivities] = useState<WorkspaceActivity[]>([]);
   const nodeSessions = useRef(new Map<string, number>());
@@ -128,7 +160,7 @@ function App() {
     const sessions = [...nodeSessions.current.values()];
     nodeSessions.current.clear();
     await Promise.all(sessions.map((sessionId) => closeAgent(sessionId)));
-    setNodes((current) => current.map((node) => ({ ...node, data: { ...node.data, agentSessionId: undefined, agentStatus: "idle" } })));
+    setNodes((current) => current.map((node) => ({ ...node, data: { ...node.data, agentSessionId: undefined, agentOpenedAt: undefined, agentStatus: "idle" } })));
   }, [setNodes]);
 
   useEffect(() => () => { void stopAgent(); }, [stopAgent]);
@@ -253,13 +285,6 @@ function App() {
   const runNode = useCallback(async (nodeId: string) => {
     const node = nodes.find((item) => item.id === nodeId);
     if (!node || !workspace) { setNotice("请先选择工作区和节点"); return; }
-    const existingSession = nodeSessions.current.get(nodeId);
-    if (existingSession) {
-      await interruptAgent(existingSession);
-      patchNodeById(nodeId, { status: "error", agentStatus: "waiting", agentOutput: `${node.data.agentOutput ?? ""}\n[Flow Canvas] 已中断，等待人工处理。` });
-      setNotice(`已中断“${node.data.title}”，节点等待人工处理`);
-      return;
-    }
     if (agentChoice === "none") { setNotice("请先在工具栏选择 AI"); return; }
     const context = inheritedContext(nodeId);
     const inheritedInput = context.input || node.data.input || node.data.path || workspace.root;
@@ -277,13 +302,15 @@ function App() {
       "所有读取、写入和命令必须限制在当前工作区。执行过程中若需要人工确认或输入，请明确输出 NEED_USER_INPUT: 后跟原因并停止等待。完成后简洁输出 FLOW_NODE_DONE。",
     ].join("\n\n");
     activeNodeRef.current = nodeId;
-    patchNodeById(nodeId, { status: "running", agentStatus: "opening", inheritedInput, input: inheritedInput, agentOutput: "[Flow Canvas] 正在启动节点 AI 会话..." });
+    patchNodeById(nodeId, { status: "running", agentStatus: nodeSessions.current.has(nodeId) ? "connected" : "opening", inheritedInput, input: inheritedInput, agentOutput: node.data.agentOutput ?? "" });
     setActivities((existing) => [...existing, { kind: "node-run", message: `执行节点：${node.data.title}`, nodeId, timestamp: Date.now() } satisfies WorkspaceActivity].slice(-120));
     try {
-      const result = await openAgent(workspace.root, agentChoice, 18, 82,
+      const existing = nodeSessions.current.get(nodeId);
+      const result = existing ? { sessionId: existing } : await openAgent(workspace.root, agentChoice, 18, 82,
         (data: AgentData) => {
           const bytes = data instanceof Uint8Array ? data : data instanceof ArrayBuffer ? new Uint8Array(data) : Uint8Array.from(data);
           const output = stripTerminalCodes(textDecoder.current.decode(bytes, { stream: true }));
+          window.dispatchEvent(new CustomEvent("flow-node-output", { detail: { nodeId, data: Array.from(bytes) } }));
           if (!output) return;
           setNodes((current) => current.map((item) => {
             if (item.id !== nodeId) return item;
@@ -300,9 +327,14 @@ function App() {
         },
       );
       nodeSessions.current.set(nodeId, result.sessionId);
-      patchNodeById(nodeId, { agentSessionId: result.sessionId, agentStatus: "connected" });
-      await writeAgent(result.sessionId, new TextEncoder().encode(`${prompt}\r`));
-      setNotice(`“${node.data.title}”已发送到 ${agentChoice}`);
+      patchNodeById(nodeId, { agentSessionId: result.sessionId, agentOpenedAt: "openedAt" in result ? result.openedAt : node.data.agentOpenedAt, agentStatus: "connected" });
+      if (!existing && "openedAt" in result) {
+        window.setTimeout(() => void findCodexSession(workspace.root, result.openedAt).then((session) => {
+          if (session) patchNodeById(nodeId, { codexSessionId: session.sessionId });
+        }).catch(() => undefined), 1200);
+      }
+      window.setTimeout(() => void writeAgent(result.sessionId, new TextEncoder().encode(`${prompt}\r`)), existing ? 0 : 700);
+      setNotice(`“${node.data.title}”已发送到 ${agentChoice} 的 WSL 终端`);
     } catch (error) {
       patchNodeById(nodeId, { status: "error", agentStatus: "error", agentOutput: `[Flow Canvas] ${error instanceof Error ? error.message : "无法启动节点会话"}` });
       setNotice(error instanceof Error ? error.message : "无法启动节点会话");
@@ -311,6 +343,14 @@ function App() {
 
   useEffect(() => {
     const onRun = (event: Event) => { const nodeId = (event as CustomEvent<{ nodeId: string }>).detail.nodeId; void runNode(nodeId); };
+    const onStop = (event: Event) => {
+      const nodeId = (event as CustomEvent<{ nodeId: string }>).detail.nodeId;
+      const sessionId = nodeSessions.current.get(nodeId);
+      if (!sessionId) return;
+      void interruptAgent(sessionId);
+      patchNodeById(nodeId, { status: "error", agentStatus: "waiting", agentOutput: `${nodes.find((item) => item.id === nodeId)?.data.agentOutput ?? ""}\n[Flow Canvas] 已发送 Ctrl-C，等待人工处理。` });
+      setNotice("已向节点 WSL 终端发送 Ctrl-C");
+    };
     const onInput = (event: Event) => {
       const { nodeId, input } = (event as CustomEvent<{ nodeId: string; input: string }>).detail;
       const sessionId = nodeSessions.current.get(nodeId);
@@ -319,10 +359,17 @@ function App() {
       patchNodeById(nodeId, { status: "running", agentStatus: "connected" });
       setActivities((existing) => [...existing, { kind: "node-input", message: "发送人工输入", nodeId, timestamp: Date.now() } satisfies WorkspaceActivity].slice(-120));
     };
+    const onTerminalInput = (event: Event) => {
+      const { nodeId, input } = (event as CustomEvent<{ nodeId: string; input: string }>).detail;
+      const sessionId = nodeSessions.current.get(nodeId);
+      if (sessionId) void writeAgent(sessionId, new TextEncoder().encode(input));
+    };
     window.addEventListener("flow-node-run", onRun);
+    window.addEventListener("flow-node-stop", onStop);
     window.addEventListener("flow-node-input", onInput);
-    return () => { window.removeEventListener("flow-node-run", onRun); window.removeEventListener("flow-node-input", onInput); };
-  }, [patchNodeById, runNode]);
+    window.addEventListener("flow-node-terminal-input", onTerminalInput);
+    return () => { window.removeEventListener("flow-node-run", onRun); window.removeEventListener("flow-node-stop", onStop); window.removeEventListener("flow-node-input", onInput); window.removeEventListener("flow-node-terminal-input", onTerminalInput); };
+  }, [nodes, patchNodeById, runNode]);
 
   const runSelected = () => {
     if (selectedNode) { void runNode(selectedNode.id); return; }

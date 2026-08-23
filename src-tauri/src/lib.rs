@@ -10,6 +10,7 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::ipc::{Channel, Response};
 use tauri::State;
 
@@ -76,6 +77,14 @@ struct AgentOpenResult {
     session_id: u64,
     workspace: String,
     agent: String,
+    opened_at: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexSessionResult {
+    session_id: String,
+    resume_command: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -352,6 +361,10 @@ fn agent_open(
     state: State<'_, AgentState>,
 ) -> Result<AgentOpenResult, String> {
     let workspace = resolve_workspace(&workspace)?;
+    let opened_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs().saturating_sub(2))
+        .unwrap_or_default();
     let mut command = agent_command(&workspace, &agent)?;
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
@@ -435,7 +448,57 @@ fn agent_open(
         session_id,
         workspace: display_path(&workspace),
         agent,
+        opened_at,
     })
+}
+
+fn codex_session_query(opened_at: u64) -> String {
+    format!(
+        r#"find "$HOME/.codex/sessions" -type f -name 'rollout-*.jsonl' -newermt "@{opened_at}" -print0 2>/dev/null | xargs -0 -r ls -t | head -n 1 | xargs -r sed -n '1s/.*"session_id":"\([^"]*\)".*/\1/p'"#
+    )
+}
+
+#[tauri::command(async)]
+fn agent_codex_session(
+    workspace: String,
+    opened_at: u64,
+) -> Result<Option<CodexSessionResult>, String> {
+    let workspace = resolve_workspace(&workspace)?;
+    let query = codex_session_query(opened_at);
+    #[cfg(target_os = "windows")]
+    let output = Command::new("wsl.exe")
+        .args([
+            "--cd",
+            &display_path(&workspace),
+            "--exec",
+            "bash",
+            "-lic",
+            &query,
+        ])
+        .output()
+        .map_err(|error| format!("无法查询 WSL Codex 会话：{error}"))?;
+    #[cfg(not(target_os = "windows"))]
+    let output = Command::new("bash")
+        .args(["-lic", &query])
+        .current_dir(&workspace)
+        .output()
+        .map_err(|error| format!("无法查询 Codex 会话：{error}"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let session_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if session_id.is_empty()
+        || session_id.len() < 20
+        || session_id
+            .chars()
+            .any(|value| !(value.is_ascii_hexdigit() || value == '-'))
+    {
+        return Ok(None);
+    }
+    Ok(Some(CodexSessionResult {
+        resume_command: format!("codex_micu resume {session_id}"),
+        session_id,
+    }))
 }
 
 #[tauri::command]
@@ -531,6 +594,7 @@ pub fn run() {
             validate_workspace_target,
             launch_plugin,
             agent_open,
+            agent_codex_session,
             agent_write,
             agent_resize,
             agent_close

@@ -19,6 +19,8 @@ export interface FlowNodeData extends Record<string, unknown> {
   status: NodeStatus;
   agentStatus?: AgentNodeStatus;
   agentSessionId?: number;
+  agentOpenedAt?: number;
+  codexSessionId?: string;
   agentOutput?: string;
   inheritedInput?: string;
 }

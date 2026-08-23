@@ -4,7 +4,8 @@ import type { FlowDocument, PluginManifest, WorkspaceFileRecord, WorkspaceSnapsh
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 
-export interface AgentOpenResult { sessionId: number; workspace: string; agent: string; }
+export interface AgentOpenResult { sessionId: number; workspace: string; agent: string; openedAt: number; }
+export interface CodexSessionResult { sessionId: string; resumeCommand: string; }
 export interface AgentExit { sessionId: number; exitCode: number | null; error: string | null; }
 export type AgentData = ArrayBuffer | Uint8Array | number[];
 
@@ -37,6 +38,10 @@ export async function saveWorkspaceFlow(workspace: string, flowDocument: FlowDoc
 
 export async function scanWorkspace(workspace: string): Promise<WorkspaceFileRecord[]> {
   return invoke<WorkspaceFileRecord[]>("scan_workspace", { workspace });
+}
+
+export async function findCodexSession(workspace: string, openedAt: number): Promise<CodexSessionResult | null> {
+  return invoke<CodexSessionResult | null>("agent_codex_session", { workspace, openedAt });
 }
 
 export async function validateWorkspaceTarget(workspace: string, path: string): Promise<string> {
