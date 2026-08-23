@@ -22,11 +22,11 @@ const defaultEdgeData: FlowEdgeData = { relation: "transforms", instruction: "æ
 const WORKSPACE_STORAGE_KEY = "flow-canvas.workspace.v1";
 
 function stripTerminalCodes(value: string): string {
-  return value.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/\r/g, "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+  return value.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
 }
 
 function terminalSummary(value: string): string {
-  const lines = stripTerminalCodes(value).split("\n").map((line) => line.trimEnd()).filter((line) => line.trim());
+  const lines = stripTerminalCodes(value).split("\n").map((line) => line.split("\r").at(-1)?.trimEnd() ?? "").filter((line) => line.trim());
   const compact: string[] = [];
   for (const line of lines) {
     if (compact.at(-1) === line) continue;
