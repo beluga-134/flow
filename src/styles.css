@@ -113,11 +113,14 @@ button { color: inherit; border: 0; cursor: pointer; }
 .node-run-button { width: 22px; height: 20px; display: grid; place-items: center; border: 1px solid #3a5575; border-radius: 4px; color: #a9c7f4; background: #203b61; }
 .node-run-button:hover { color: #fff; background: #315b91; }
 .node-agent-output { max-height: 74px; margin: 0 11px 6px; padding: 6px 7px; overflow: auto; border: 1px solid #273c52; border-radius: 4px; color: #9db1c8; background: #0e1823; font: 9px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
-.node-terminal { height: 96px; margin: 0 11px 6px; overflow: hidden; border: 1px solid #273c52; border-radius: 4px; background: #0b121b; }
-.node-terminal:not(.active) { display: none; }
+.node-terminal { height: 112px; margin: 0 11px 6px; overflow: hidden; border: 1px solid #273c52; border-radius: 4px; background: #0b121b; }
+.node-terminal:not(.open) { display: none; }
 .node-terminal .xterm { height: 100%; padding: 4px 5px; }
 .node-terminal .xterm-viewport { scrollbar-color: #344b64 #0b121b; }
+.node-agent-summary { max-height: 74px; margin: 0 11px 6px; padding: 6px 7px; overflow: hidden; border: 1px solid #273c52; border-radius: 4px; color: #9db1c8; background: #0e1823; font: 9px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
 .node-agent-actions { display: inline-flex; align-items: center; gap: 4px; }
+.node-terminal-toggle { width: 22px; height: 20px; display: grid; place-items: center; border: 1px solid #3a5575; border-radius: 4px; color: #91a9c8; background: #182d48; }
+.node-terminal-toggle:hover { color: #e6f0ff; background: #294d76; }
 .node-stop-button { width: 22px; height: 20px; display: grid; place-items: center; border: 1px solid #714950; border-radius: 4px; color: #f0a0a0; background: #3a252d; }
 .node-stop-button:hover { color: #fff; background: #743943; }
 .node-session-id { display: flex; align-items: center; gap: 5px; margin: 0 11px 5px; color: #7189a4; font-size: 8px; }

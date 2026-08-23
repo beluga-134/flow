@@ -25,6 +25,16 @@ function stripTerminalCodes(value: string): string {
   return value.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/\r/g, "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
 }
 
+function terminalSummary(value: string): string {
+  const lines = stripTerminalCodes(value).split("\n").map((line) => line.trimEnd()).filter((line) => line.trim());
+  const compact: string[] = [];
+  for (const line of lines) {
+    if (compact.at(-1) === line) continue;
+    compact.push(line);
+  }
+  return compact.slice(-18).join("\n").slice(-1800);
+}
+
 function joinWorkspacePath(root: string, value: string): string {
   const clean = value.trim().replace(/^['"]|['"]$/g, "");
   if (!clean) return "";
@@ -48,11 +58,11 @@ function workspaceFlow(workspace: WorkspaceSnapshot): FlowDocument {
   };
 }
 
-function NodeTerminal({ nodeId, data, active }: { nodeId: string; data: FlowNodeData; active: boolean }) {
+function NodeTerminal({ nodeId, data, active, open }: { nodeId: string; data: FlowNodeData; active: boolean; open: boolean }) {
   const host = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   useEffect(() => {
-    if (!active || !host.current || terminalRef.current) return;
+    if (!open || !host.current || terminalRef.current) return;
     const terminal = new Terminal({
       cursorBlink: true, convertEol: true, scrollback: 1200,
       fontFamily: "Cascadia Mono, Consolas, monospace", fontSize: 10,
@@ -72,13 +82,14 @@ function NodeTerminal({ nodeId, data, active }: { nodeId: string; data: FlowNode
     window.addEventListener("flow-node-output", outputListener);
     terminalRef.current = terminal;
     return () => { dataDisposable.dispose(); window.removeEventListener("flow-node-output", outputListener); terminal.dispose(); terminalRef.current = null; };
-  }, [active, nodeId]);
-  return <div className={`node-terminal ${active ? "active" : ""}`} ref={host} />;
+  }, [nodeId, open]);
+  return <div className={`node-terminal ${open ? "open" : ""}`} ref={host} />;
 }
 
 function FlowNodeCard({ id, data, selected }: NodeProps<FlowNode>) {
   const Icon = nodeIcons[data.kind];
   const agentActive = data.agentStatus === "connected" || data.agentStatus === "opening" || data.agentStatus === "waiting";
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const runNode = (event: React.MouseEvent) => { event.stopPropagation(); window.dispatchEvent(new CustomEvent("flow-node-run", { detail: { nodeId: id } })); };
   const stopNode = (event: React.MouseEvent) => { event.stopPropagation(); window.dispatchEvent(new CustomEvent("flow-node-stop", { detail: { nodeId: id } })); };
   const sendNodeInput = (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); event.stopPropagation(); const input = new FormData(event.currentTarget).get("node-input")?.toString() ?? ""; if (input.trim()) { window.dispatchEvent(new CustomEvent("flow-node-input", { detail: { nodeId: id, input } })); event.currentTarget.reset(); } };
@@ -92,9 +103,10 @@ function FlowNodeCard({ id, data, selected }: NodeProps<FlowNode>) {
       <p className="node-path">{data.path || "未绑定本地路径"}</p>
       <p className="node-summary">{data.summary}</p>
       <div className="node-io"><span><b>输入</b>{data.input || "—"}</span><ArrowRight size={13} /><span><b>输出</b>{data.output || "—"}</span></div>
-      <div className="node-agent-head"><span><Bot size={11} />{data.agentStatus === "waiting" ? "等待人工处理" : data.agentStatus === "connected" ? "WSL Codex 终端" : "节点终端"}</span><span className="node-agent-actions"><button className="node-run-button" onClick={runNode} title="发送拼接后的 Flow 提示词"><Play size={11} /></button>{agentActive && <button className="node-stop-button" onClick={stopNode} title="发送 Ctrl-C，中断当前任务但保留终端"><Square size={10} /></button>}</span></div>
+      <div className="node-agent-head"><span><Bot size={11} />{data.agentStatus === "waiting" ? "等待人工处理" : data.agentStatus === "connected" ? "WSL Codex" : "节点 AI"}</span><span className="node-agent-actions"><button className="node-terminal-toggle" onClick={(event) => { event.stopPropagation(); setTerminalOpen((value) => !value); }} title={terminalOpen ? "收起原始终端" : "展开原始终端"}><SquareTerminal size={11} /></button><button className="node-run-button" onClick={runNode} title="发送拼接后的 Flow 提示词"><Play size={11} /></button>{agentActive && <button className="node-stop-button" onClick={stopNode} title="发送 Ctrl-C，中断当前任务但保留终端"><Square size={10} /></button>}</span></div>
       {data.codexSessionId && <div className="node-session-id" title={`codex_micu resume ${data.codexSessionId}`}><span>会话</span><code>{data.codexSessionId}</code><button onClick={(event) => { event.stopPropagation(); void navigator.clipboard?.writeText(`codex_micu resume ${data.codexSessionId}`); }} title="复制 resume 命令"><Copy size={10} /></button></div>}
-      <NodeTerminal nodeId={id} data={data} active={agentActive} />
+      {data.agentOutput && <pre className="node-agent-summary">{terminalSummary(data.agentOutput)}</pre>}
+      <NodeTerminal nodeId={id} data={data} active={agentActive} open={terminalOpen} />
       {agentActive && <form className="node-agent-input" onSubmit={sendNodeInput}><input name="node-input" placeholder="需要人工输入时在这里回复" onClick={(event) => event.stopPropagation()} /><button title="发送人工回复"><ArrowRight size={11} /></button></form>}
     </div>
     <Handle className="flow-handle output-handle" type="source" position={Position.Right} id="out" title="输出连接点" />
@@ -137,6 +149,8 @@ function App() {
   const fileBaseline = useRef(new Map<string, { size: number; modifiedAt: number }>());
   const activeNodeRef = useRef<string | null>(null);
   const textDecoder = useRef(new TextDecoder());
+  const outputBuffers = useRef(new Map<string, string>());
+  const outputTimers = useRef(new Map<string, number>());
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId) ?? null;
 
@@ -312,13 +326,21 @@ function App() {
           const output = stripTerminalCodes(textDecoder.current.decode(bytes, { stream: true }));
           window.dispatchEvent(new CustomEvent("flow-node-output", { detail: { nodeId, data: Array.from(bytes) } }));
           if (!output) return;
-          setNodes((current) => current.map((item) => {
-            if (item.id !== nodeId) return item;
-            const combined = `${item.data.agentOutput ?? ""}${output}`.slice(-12000);
-            const waiting = /NEED_USER_INPUT:|press enter|\[[yYnN]\/[^\]]+\]|confirm|需要.*(?:确认|输入|选择)/i.test(combined);
-            const done = /FLOW_NODE_DONE/i.test(combined);
-            return { ...item, data: { ...item.data, agentOutput: combined, agentStatus: waiting ? "waiting" : item.data.agentStatus === "opening" ? "connected" : item.data.agentStatus, status: waiting ? "error" : done ? "success" : "running" } };
-          }));
+          outputBuffers.current.set(nodeId, `${outputBuffers.current.get(nodeId) ?? ""}${output}`);
+          if (outputTimers.current.has(nodeId)) return;
+          const timer = window.setTimeout(() => {
+            outputTimers.current.delete(nodeId);
+            const buffered = outputBuffers.current.get(nodeId) ?? "";
+            outputBuffers.current.delete(nodeId);
+            setNodes((current) => current.map((item) => {
+              if (item.id !== nodeId) return item;
+              const combined = `${item.data.agentOutput ?? ""}${buffered}`.slice(-12000);
+              const waiting = /NEED_USER_INPUT:|press enter|\[[yYnN]\/[^\]]+\]|confirm|需要.*(?:确认|输入|选择)/i.test(combined);
+              const done = /FLOW_NODE_DONE/i.test(combined);
+              return { ...item, data: { ...item.data, agentOutput: combined, agentStatus: waiting ? "waiting" : item.data.agentStatus === "opening" ? "connected" : item.data.agentStatus, status: waiting ? "error" : done ? "success" : "running" } };
+            }));
+          }, 120);
+          outputTimers.current.set(nodeId, timer);
         },
         (exit) => {
           nodeSessions.current.delete(nodeId);
