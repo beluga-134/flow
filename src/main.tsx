@@ -329,9 +329,15 @@ function App() {
       nodeSessions.current.set(nodeId, result.sessionId);
       patchNodeById(nodeId, { agentSessionId: result.sessionId, agentOpenedAt: "openedAt" in result ? result.openedAt : node.data.agentOpenedAt, agentStatus: "connected" });
       if (!existing && "openedAt" in result) {
-        window.setTimeout(() => void findCodexSession(workspace.root, result.openedAt).then((session) => {
-          if (session) patchNodeById(nodeId, { codexSessionId: session.sessionId });
-        }).catch(() => undefined), 1200);
+        const openedAt = result.openedAt;
+        const pollCodexSession = async (attempt: number): Promise<void> => {
+          try {
+            const session = await findCodexSession(workspace.root, openedAt);
+            if (session) { patchNodeById(nodeId, { codexSessionId: session.sessionId }); return; }
+          } catch { /* WSL session metadata may not exist yet. */ }
+          if (attempt < 12) window.setTimeout(() => void pollCodexSession(attempt + 1), 800);
+        };
+        window.setTimeout(() => void pollCodexSession(0), 900);
       }
       window.setTimeout(() => void writeAgent(result.sessionId, new TextEncoder().encode(`${prompt}\r`)), existing ? 0 : 700);
       setNotice(`“${node.data.title}”已发送到 ${agentChoice} 的 WSL 终端`);

@@ -16,13 +16,13 @@ Flow Canvas 会定期扫描工作区文件，并把新增/修改文件记录到 
 
 ## AI 会话
 
-画布工具栏选择 `Codex · WSL codex_micu` 后，直接点击任意节点卡片内的播放按钮即可执行。每个节点拥有独立的持续 PTY 会话，并以当前工作区运行：
+画布工具栏选择 `Codex · WSL codex_micu` 后，直接点击任意节点卡片内的播放按钮即可执行。每个节点拥有独立的持续 WSL PTY 终端，并以当前工作区运行：
 
 ```text
 codex_micu -C "$PWD" -s workspace-write -a never --no-alt-screen
 ```
 
-节点提示会包含完整 `flow.json`、前置/后续节点关系，以及前置节点输出文件。前置输出会自动继承为当前节点输入。AI 输出显示在节点内部；检测到 `NEED_USER_INPUT:` 或中断会让节点红色闪烁，此时可在节点输入框回复。切换工作区会关闭旧节点会话。
+Windows 端只负责读取 Flow、拼接节点上下文和调度；AI 命令、工具调用和文件读写均发生在节点自己的 WSL 终端。节点提示会包含完整 `flow.json`、前置/后续节点关系，以及前置节点输出文件。前置输出会自动继承为当前节点输入。AI 输出显示在节点内部；检测到 `NEED_USER_INPUT:` 或中断会让节点红色闪烁，此时可在节点终端或输入框回复。节点会显示真实 Codex UUID，并提供 `codex_micu resume <UUID>` 命令。
 
 ## 开发
 
