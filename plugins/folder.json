@@ -1,0 +1,6 @@
+{
+  "id": "folder",
+  "name": "系统文件夹",
+  "description": "使用系统默认文件管理器打开目标路径",
+  "actions": [{ "id": "open", "label": "打开所在文件夹" }]
+}

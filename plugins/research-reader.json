@@ -1,0 +1,7 @@
+{
+  "id": "research-reader",
+  "name": "Research Reader",
+  "description": "外部文档预览器，不随 Flow Canvas 打包",
+  "executable": "Research-Link-Reader-Windows-x64.exe",
+  "actions": [{ "id": "open", "label": "用 Research Reader 打开" }]
+}

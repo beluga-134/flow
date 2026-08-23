@@ -1,0 +1,7 @@
+{
+  "id": "sql-viewer",
+  "name": "SQL Viewer",
+  "description": "外部本地数据查看器，不随 Flow Canvas 打包",
+  "executable": "SQL Viewer.exe",
+  "actions": [{ "id": "open", "label": "用 SQL Viewer 打开" }]
+}

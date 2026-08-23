@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.cache/
+target/
+*.tmp
+*.bak
+flow-preview*.png
+handles-preview.png
+workspace-ai-preview.png
+test/
