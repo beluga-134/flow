@@ -5,13 +5,13 @@ import {
 } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, ArrowRight, BookOpen, Bot, Check, Copy, FilePlus2, FolderCog, FolderOpen, GitBranch, Hammer, Info, Layers3, Link2, MousePointer2, Play, Plus, Power, Save, Search, Settings2, SquareTerminal, Trash2, Square } from "lucide-react";
+import { Activity, ArrowRight, BookOpen, Bot, Check, ChevronDown, ChevronUp, Copy, FilePlus2, FolderCog, FolderOpen, GitBranch, Hammer, Info, Layers3, Link2, MousePointer2, Play, Plus, Save, Search, Settings2, Square, SquareTerminal, Trash2 } from "lucide-react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xyflow/react/dist/style.css";
 import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
-import { chooseDirectory, closeAgent, findCodexSession, interruptAgent, openAgent, openPlugin, openWorkspace, saveWorkspaceFlow, scanWorkspace, startupWorkspace, validateWorkspaceTarget, writeAgent, type AgentData } from "./backend";
+import { chooseDirectory, closeAgent, findCodexSession, interruptAgent, openAgent, openPlugin, openWorkspace, resizeAgent, saveWorkspaceFlow, scanWorkspace, startupWorkspace, validateWorkspaceTarget, writeAgent, type AgentData } from "./backend";
 import { demoFlow, plugins } from "./data";
 import type { FlowDocument, FlowEdge, FlowEdgeData, FlowNode, FlowNodeData, NodeKind, Relation, WorkspaceActivity, WorkspaceFileRecord, WorkspaceSnapshot } from "./types";
 
@@ -23,16 +23,6 @@ const WORKSPACE_STORAGE_KEY = "flow-canvas.workspace.v1";
 
 function stripTerminalCodes(value: string): string {
   return value.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
-}
-
-function terminalSummary(value: string): string {
-  const lines = stripTerminalCodes(value).split("\n").map((line) => line.split("\r").at(-1)?.trimEnd() ?? "").filter((line) => line.trim());
-  const compact: string[] = [];
-  for (const line of lines) {
-    if (compact.at(-1) === line) continue;
-    compact.push(line);
-  }
-  return compact.slice(-18).join("\n").slice(-1800);
 }
 
 function joinWorkspacePath(root: string, value: string): string {
@@ -58,41 +48,65 @@ function workspaceFlow(workspace: WorkspaceSnapshot): FlowDocument {
   };
 }
 
-function NodeTerminal({ nodeId, data, active, open }: { nodeId: string; data: FlowNodeData; active: boolean; open: boolean }) {
+function PersistentTerminal({ nodeId, data, active, sessionId }: { nodeId: string; data: FlowNodeData; active: boolean; sessionId?: number }) {
   const host = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
+  const sessionRef = useRef<number | undefined>(sessionId);
+  const activeRef = useRef(active);
+  const inputHandlerRef = useRef<(nodeId: string, input: string) => void>(() => undefined);
+  inputHandlerRef.current = (currentNodeId, input) => window.dispatchEvent(new CustomEvent("flow-node-terminal-input", { detail: { nodeId: currentNodeId, input } }));
+  sessionRef.current = sessionId;
+  activeRef.current = active;
+
+  const resize = () => {
+    const terminal = terminalRef.current;
+    const fit = fitRef.current;
+    if (!activeRef.current || !terminal || !fit || !host.current || host.current.offsetParent === null) return;
+    try {
+      fit.fit();
+      if (sessionRef.current && terminal.cols && terminal.rows) {
+        void resizeAgent(sessionRef.current, terminal.rows, terminal.cols).catch(() => undefined);
+      }
+    } catch { /* The panel may still be settling its layout. */ }
+  };
+
   useEffect(() => {
-    if (!open || !host.current || terminalRef.current) return;
+    if (!host.current || terminalRef.current) return;
     const terminal = new Terminal({
-      cursorBlink: true, convertEol: true, scrollback: 1200,
-      fontFamily: "Cascadia Mono, Consolas, monospace", fontSize: 10,
+      cursorBlink: true, convertEol: true, scrollback: 5000,
+      fontFamily: "Cascadia Mono, Consolas, monospace", fontSize: 12,
       theme: { background: "#0b121b", foreground: "#cbd8e8", cursor: "#83aaff", selectionBackground: "#29456b" },
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(host.current);
-    requestAnimationFrame(() => fit.fit());
     if (data.agentOutput) terminal.write(data.agentOutput.replace(/\n/g, "\r\n"));
     const outputListener = (event: Event) => {
       const detail = (event as CustomEvent<{ nodeId: string; data: number[] }>).detail;
       if (detail.nodeId === nodeId) terminal.write(Uint8Array.from(detail.data));
     };
-    const inputListener = (value: string) => window.dispatchEvent(new CustomEvent("flow-node-terminal-input", { detail: { nodeId, input: value } }));
-    const dataDisposable = terminal.onData(inputListener);
+    const dataDisposable = terminal.onData((value) => inputHandlerRef.current(nodeId, value));
+    const resizeObserver = new ResizeObserver(resize);
     window.addEventListener("flow-node-output", outputListener);
+    window.addEventListener("resize", resize);
+    resizeObserver.observe(host.current);
     terminalRef.current = terminal;
-    return () => { dataDisposable.dispose(); window.removeEventListener("flow-node-output", outputListener); terminal.dispose(); terminalRef.current = null; };
-  }, [nodeId, open]);
-  return <div className={`node-terminal ${open ? "open" : ""}`} ref={host} />;
+    fitRef.current = fit;
+    requestAnimationFrame(resize);
+    return () => { dataDisposable.dispose(); resizeObserver.disconnect(); window.removeEventListener("resize", resize); window.removeEventListener("flow-node-output", outputListener); terminal.dispose(); terminalRef.current = null; fitRef.current = null; };
+  }, [nodeId]);
+
+  useEffect(() => { requestAnimationFrame(resize); }, [active, sessionId]);
+
+  return <div className={`agent-terminal-view ${active ? "active" : ""}`} ref={host} />;
 }
 
 function FlowNodeCard({ id, data, selected }: NodeProps<FlowNode>) {
   const Icon = nodeIcons[data.kind];
   const agentActive = data.agentStatus === "connected" || data.agentStatus === "opening" || data.agentStatus === "waiting";
-  const [terminalOpen, setTerminalOpen] = useState(false);
   const runNode = (event: React.MouseEvent) => { event.stopPropagation(); window.dispatchEvent(new CustomEvent("flow-node-run", { detail: { nodeId: id } })); };
   const stopNode = (event: React.MouseEvent) => { event.stopPropagation(); window.dispatchEvent(new CustomEvent("flow-node-stop", { detail: { nodeId: id } })); };
-  const sendNodeInput = (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); event.stopPropagation(); const input = new FormData(event.currentTarget).get("node-input")?.toString() ?? ""; if (input.trim()) { window.dispatchEvent(new CustomEvent("flow-node-input", { detail: { nodeId: id, input } })); event.currentTarget.reset(); } };
   return <div className={`flow-node-card kind-${data.kind} ${selected ? "is-selected" : ""} ${data.status === "error" ? "needs-attention" : ""}`}>
     <Handle className="flow-handle input-handle" type="target" position={Position.Left} id="in" title="输入连接点" />
     <Handle className="flow-handle input-handle" type="target" position={Position.Top} id="in-top" title="输入连接点" />
@@ -103,11 +117,7 @@ function FlowNodeCard({ id, data, selected }: NodeProps<FlowNode>) {
       <p className="node-path">{data.path || "未绑定本地路径"}</p>
       <p className="node-summary">{data.summary}</p>
       <div className="node-io"><span><b>输入</b>{data.input || "—"}</span><ArrowRight size={13} /><span><b>输出</b>{data.output || "—"}</span></div>
-      <div className="node-agent-head"><span><Bot size={11} />{data.agentStatus === "waiting" ? "等待人工处理" : data.agentStatus === "connected" ? "WSL Codex" : "节点 AI"}</span><span className="node-agent-actions"><button className="node-terminal-toggle" onClick={(event) => { event.stopPropagation(); setTerminalOpen((value) => !value); }} title={terminalOpen ? "收起原始终端" : "展开原始终端"}><SquareTerminal size={11} /></button><button className="node-run-button" onClick={runNode} title="发送拼接后的 Flow 提示词"><Play size={11} /></button>{agentActive && <button className="node-stop-button" onClick={stopNode} title="发送 Ctrl-C，中断当前任务但保留终端"><Square size={10} /></button>}</span></div>
-      {data.codexSessionId && <div className="node-session-id" title={`codex_micu resume ${data.codexSessionId}`}><span>会话</span><code>{data.codexSessionId}</code><button onClick={(event) => { event.stopPropagation(); void navigator.clipboard?.writeText(`codex_micu resume ${data.codexSessionId}`); }} title="复制 resume 命令"><Copy size={10} /></button></div>}
-      {data.agentOutput && <pre className="node-agent-summary">{terminalSummary(data.agentOutput)}</pre>}
-      <NodeTerminal nodeId={id} data={data} active={agentActive} open={terminalOpen} />
-      {agentActive && <form className="node-agent-input" onSubmit={sendNodeInput}><input name="node-input" placeholder="需要人工输入时在这里回复" onClick={(event) => event.stopPropagation()} /><button title="发送人工回复"><ArrowRight size={11} /></button></form>}
+      <div className="node-agent-head"><span><Bot size={11} />{data.agentStatus === "waiting" ? "等待人工处理" : data.agentStatus === "connected" ? "WSL Codex" : "节点 AI"}</span><span className="node-agent-actions"><button className="node-run-button" onClick={runNode} title="发送拼接后的 Flow 提示词"><Play size={11} /></button>{agentActive && <button className="node-stop-button" onClick={stopNode} title="发送 Ctrl-C，中断当前任务但保留终端"><Square size={10} /></button>}</span></div>
     </div>
     <Handle className="flow-handle output-handle" type="source" position={Position.Right} id="out" title="输出连接点" />
     <Handle className="flow-handle output-handle" type="source" position={Position.Bottom} id="out-bottom" title="输出连接点" />
@@ -125,6 +135,33 @@ function FlowEdgeView({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
     <BaseEdge id={id} path={path} markerEnd={markerEnd} className="flow-edge" />
     <EdgeLabelRenderer><div className="edge-label nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)` }}><span className="edge-relation">{relationLabels[data?.relation ?? "transforms"]}</span><span>{data?.instruction || "点击编辑处理方式"}</span></div></EdgeLabelRenderer>
   </>;
+}
+
+function AgentPanel({ nodes, selectedNodeId, onSelectNode }: { nodes: FlowNode[]; selectedNodeId: string | null; onSelectNode: (nodeId: string) => void }) {
+  const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
+  const panelOpen = !!selectedNode;
+  const agentActive = selectedNode?.data.agentStatus === "connected" || selectedNode?.data.agentStatus === "opening" || selectedNode?.data.agentStatus === "waiting";
+  const statusLabel = selectedNode?.data.agentStatus === "waiting" ? "等待人工处理" : selectedNode?.data.agentStatus === "connected" ? "已连接" : selectedNode?.data.agentStatus === "opening" ? "正在连接" : selectedNode?.data.agentStatus === "exited" ? "已结束" : selectedNode?.data.agentStatus === "error" ? "连接异常" : "未启动";
+  const runSelected = () => { if (selectedNode) window.dispatchEvent(new CustomEvent("flow-node-run", { detail: { nodeId: selectedNode.id } })); };
+  const stopSelected = () => { if (selectedNode) window.dispatchEvent(new CustomEvent("flow-node-stop", { detail: { nodeId: selectedNode.id } })); };
+  const copySession = () => { if (selectedNode?.data.codexSessionId) void navigator.clipboard?.writeText(`codex_micu resume ${selectedNode.data.codexSessionId}`); };
+  return <section className={`agent-panel ${panelOpen ? "open" : ""}`}>
+    <header>
+      <span className="agent-panel-title"><SquareTerminal size={14} /><b>节点终端</b>{selectedNode && <em className={selectedNode.data.agentStatus ?? "idle"}>{statusLabel}</em>}</span>
+      <div className="agent-tabs" role="tablist" aria-label="节点终端">
+        {nodes.map((node) => <button className={node.id === selectedNodeId ? "active" : ""} key={node.id} onClick={() => onSelectNode(node.id)} role="tab" aria-selected={node.id === selectedNodeId} title={node.data.title}><span className={`agent-tab-dot ${node.data.status}`} />{node.data.title}</button>)}
+      </div>
+      {selectedNode && <span className="agent-panel-actions">
+        {selectedNode.data.codexSessionId && <button onClick={copySession} title="复制 resume 命令"><Copy size={13} /></button>}
+        <button onClick={runSelected} title="运行当前节点"><Play size={13} /></button>
+        {agentActive && <button onClick={stopSelected} title="发送 Ctrl-C"><Square size={12} /></button>}
+      </span>}
+      <span className="agent-panel-caret">{panelOpen ? <ChevronDown size={14} /> : <ChevronUp size={14} />}</span>
+    </header>
+    <div className="agent-terminal-stack">
+      {nodes.map((node) => <PersistentTerminal key={node.id} nodeId={node.id} data={node.data} active={node.id === selectedNodeId} sessionId={node.data.agentSessionId} />)}
+    </div>
+  </section>;
 }
 
 const nodeTypes = { flow: FlowNodeCard };
@@ -148,7 +185,7 @@ function App() {
   const nodeSessions = useRef(new Map<string, number>());
   const fileBaseline = useRef(new Map<string, { size: number; modifiedAt: number }>());
   const activeNodeRef = useRef<string | null>(null);
-  const textDecoder = useRef(new TextDecoder());
+  const textDecoders = useRef(new Map<string, TextDecoder>());
   const outputBuffers = useRef(new Map<string, string>());
   const outputTimers = useRef(new Map<string, number>());
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
@@ -323,7 +360,9 @@ function App() {
       const result = existing ? { sessionId: existing } : await openAgent(workspace.root, agentChoice, 18, 82,
         (data: AgentData) => {
           const bytes = data instanceof Uint8Array ? data : data instanceof ArrayBuffer ? new Uint8Array(data) : Uint8Array.from(data);
-          const output = stripTerminalCodes(textDecoder.current.decode(bytes, { stream: true }));
+          const decoder = textDecoders.current.get(nodeId) ?? new TextDecoder();
+          textDecoders.current.set(nodeId, decoder);
+          const output = stripTerminalCodes(decoder.decode(bytes, { stream: true }));
           window.dispatchEvent(new CustomEvent("flow-node-output", { detail: { nodeId, data: Array.from(bytes) } }));
           if (!output) return;
           outputBuffers.current.set(nodeId, `${outputBuffers.current.get(nodeId) ?? ""}${output}`);
@@ -379,14 +418,6 @@ function App() {
       patchNodeById(nodeId, { status: "error", agentStatus: "waiting", agentOutput: `${nodes.find((item) => item.id === nodeId)?.data.agentOutput ?? ""}\n[Flow Canvas] 已发送 Ctrl-C，等待人工处理。` });
       setNotice("已向节点 WSL 终端发送 Ctrl-C");
     };
-    const onInput = (event: Event) => {
-      const { nodeId, input } = (event as CustomEvent<{ nodeId: string; input: string }>).detail;
-      const sessionId = nodeSessions.current.get(nodeId);
-      if (!sessionId) { setNotice("该节点 AI 会话已结束，请重新执行"); return; }
-      void writeAgent(sessionId, new TextEncoder().encode(`${input}\r`));
-      patchNodeById(nodeId, { status: "running", agentStatus: "connected" });
-      setActivities((existing) => [...existing, { kind: "node-input", message: "发送人工输入", nodeId, timestamp: Date.now() } satisfies WorkspaceActivity].slice(-120));
-    };
     const onTerminalInput = (event: Event) => {
       const { nodeId, input } = (event as CustomEvent<{ nodeId: string; input: string }>).detail;
       const sessionId = nodeSessions.current.get(nodeId);
@@ -394,9 +425,8 @@ function App() {
     };
     window.addEventListener("flow-node-run", onRun);
     window.addEventListener("flow-node-stop", onStop);
-    window.addEventListener("flow-node-input", onInput);
     window.addEventListener("flow-node-terminal-input", onTerminalInput);
-    return () => { window.removeEventListener("flow-node-run", onRun); window.removeEventListener("flow-node-stop", onStop); window.removeEventListener("flow-node-input", onInput); window.removeEventListener("flow-node-terminal-input", onTerminalInput); };
+    return () => { window.removeEventListener("flow-node-run", onRun); window.removeEventListener("flow-node-stop", onStop); window.removeEventListener("flow-node-terminal-input", onTerminalInput); };
   }, [nodes, patchNodeById, runNode]);
 
   const runSelected = () => {
@@ -456,6 +486,7 @@ function App() {
       <main className="canvas-area">
         <div className="canvas-toolbar"><div className="toolbar-group"><button className="tool-button active" title="选择工具"><MousePointer2 size={16} /></button><button className="tool-button" title="添加节点" onClick={() => addNode("operation")}><Plus size={16} /></button><button className="tool-button" title="适应画布"><Layers3 size={16} /></button><div className="ai-selector"><Bot size={15} /><select aria-label="选择 AI" value={agentChoice} onChange={(event) => { const next = event.target.value as "none" | "codex_micu"; setAgentChoice(next); if (next === "none") void stopAgent(); }}><option value="none">不使用 AI</option><option value="codex_micu">Codex · WSL codex_micu</option></select></div></div><div className="toolbar-group"><button className="action-button" onClick={addProject}><FolderOpen size={15} />添加项目</button><button className="action-button primary" onClick={runSelected}><Play size={15} />运行选中节点</button></div></div>
         <div className="canvas-wrap"><ReactFlow nodes={nodes.map((node) => ({ ...node, hidden: !!search.trim() && !filteredNodes.some((item) => item.id === node.id) }))} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect} connectionLineType={ConnectionLineType.SmoothStep} onNodeClick={(_, node) => { setSelectedNodeId(node.id); setSelectedEdgeId(null); }} onEdgeClick={(_, edge) => { setSelectedEdgeId(edge.id); setSelectedNodeId(null); }} onPaneClick={() => { setSelectedNodeId(null); setSelectedEdgeId(null); }} fitView fitViewOptions={{ padding: 0.2 }} minZoom={0.25} maxZoom={1.5}><Background color="#263342" gap={24} size={1} /><Controls showInteractive={false} /><MiniMap pannable zoomable nodeColor={(node) => ({ project: "#5b8def", artifact: "#d78b62", operation: "#8d7be2", conclusion: "#55aa86", reference: "#c0a468" }[node.data?.kind as NodeKind] ?? "#738196")} /></ReactFlow>{desktop && workspaceLoaded && !workspace && <div className="workspace-empty"><div><FolderCog size={22} /></div><h2>选择工作区</h2><p>Flow、日志和产物将写入所选文件夹。</p><button className="action-button primary" onClick={selectWorkspace}><FolderOpen size={15} />选择文件夹</button></div>}{workspace && <div className="canvas-hint"><Link2 size={14} />从节点右侧拖到另一个节点，创建带处理说明的连接</div>}</div>
+        <AgentPanel key={workspace?.root ?? "preview"} nodes={nodes} selectedNodeId={selectedNodeId} onSelectNode={(nodeId) => { setSelectedNodeId(nodeId); setSelectedEdgeId(null); }} />
         <div className="statusbar"><span><Activity size={14} />{notice}</span><span>{workspace?.flowPath ?? `${nodes.length} 个节点 · ${edges.length} 条连接`} · 已记录 {workspaceFiles.length} 个文件</span></div>
       </main>
       <Inspector node={selectedNode} edge={selectedEdge} workspace={workspace} patchNode={patchNode} patchEdge={patchEdge} onChoosePath={chooseNodeDirectory} onLaunch={launch} onDelete={() => { if (selectedNodeId) { setNodes((current) => current.filter((node) => node.id !== selectedNodeId)); setEdges((current) => current.filter((edge) => edge.source !== selectedNodeId && edge.target !== selectedNodeId)); setSelectedNodeId(null); } else if (selectedEdgeId) { setEdges((current) => current.filter((edge) => edge.id !== selectedEdgeId)); setSelectedEdgeId(null); } }} />

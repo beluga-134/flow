@@ -17,7 +17,7 @@ use tauri::State;
 const MAX_FLOW_BYTES: u64 = 16 * 1024 * 1024;
 const WORKSPACE_DATA_DIRECTORY: &str = ".flow-canvas";
 const WORKSPACE_FLOW_FILE: &str = "flow.json";
-const CODEX_MICU_COMMAND: &str = r#"if ! type nvm >/dev/null 2>&1; then case "$(node -v 2>/dev/null)" in v22.*) nvm() { return 0; } ;; *) printf 'codex_micu requires Node 22 or nvm\n' >&2; exit 127 ;; esac; fi; codex_micu -C "$PWD" -s workspace-write -a never --no-alt-screen"#;
+const CODEX_MICU_COMMAND: &str = r#"if ! type nvm >/dev/null 2>&1; then case "$(node -v 2>/dev/null)" in v22.*) nvm() { return 0; } ;; *) printf 'codex_micu requires Node 22 or nvm\n' >&2; exit 127 ;; esac; fi; codex_micu -C "$PWD" -s workspace-write -a never --no-alt-screen; printf '\n[Flow Canvas] Codex 会话已结束，已返回终端。退出终端请按 Ctrl-D。\n' >&2; exec bash -i"#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
