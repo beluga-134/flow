@@ -278,15 +278,21 @@ export function DocumentMode({ initialPath, onExit }: { initialPath: string | nu
     <div className="dm-body">
       <div className="dm-canvas">
         {sourceJson ? <ReactFlow
-          nodes={nodes.map((node) => ({ ...node, selected: node.id === selectedId }))}
+          nodes={nodes}
           edges={edges}
           onNodesChange={onNodesChange}
           nodeTypes={dmNodeTypes}
           edgeTypes={dmEdgeTypes}
           onNodeClick={(_, node) => setSelectedId(node.id)}
+          onSelectionChange={({ nodes: picked }) => setSelectedId((current) => {
+            if (picked.length === 0) return null;
+            return current && picked.some((node) => node.id === current) ? current : picked[picked.length - 1].id;
+          })}
           onPaneClick={() => setSelectedId(null)}
           nodesConnectable={false}
           deleteKeyCode={null}
+          panOnDrag={false}
+          selectionOnDrag
           fitView
           fitViewOptions={{ padding: 0.12 }}
           minZoom={0.1}
@@ -328,7 +334,7 @@ export function DocumentMode({ initialPath, onExit }: { initialPath: string | nu
                 : null}
             </div>
           </div>
-        </> : <div className="dm-inspector-empty"><StickyNote size={20} /><h3>点击画布卡片</h3><p>查看卡片详情,并可调用外部工具打开对应文档。<br />拖动卡片可整理布局,「保存布局」写回文档。</p></div>}
+        </> : <div className="dm-inspector-empty"><StickyNote size={20} /><h3>点击画布卡片</h3><p>查看卡片详情,并可调用外部工具打开对应文档。<br />Ctrl+点击或空白处拖框可多选,拖动任一选中卡片整体移动;「保存布局」写回文档。</p></div>}
         {warnings.length > 0 ? <div className="dm-warnings"><b>导入提示</b>{warnings.slice(0, 5).map((warning) => <span key={warning}>· {warning}</span>)}</div> : null}
       </aside>
     </div>
