@@ -8,3 +8,7 @@ flow-preview*.png
 handles-preview.png
 workspace-ai-preview.png
 test/
+research/
+logs/
+/Flow Canvas.exe
+canvas/

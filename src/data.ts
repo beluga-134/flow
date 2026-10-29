@@ -11,7 +11,7 @@ export const plugins: PluginManifest[] = [
     id: "research-reader",
     name: "Research Reader",
     description: "预览 Markdown、PDF、DOCX 和源码文件",
-    executable: "Research-Link-Reader-Windows-x64.exe",
+    executable: "E:/qq_codex/research/Research-Link-Reader-Windows-x64.exe",
     actions: [{ id: "open", label: "用 Research Reader 打开", extensions: ["md", "markdown", "pdf", "docx", "html", "py", "r"] }],
   },
   {

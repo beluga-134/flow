@@ -1,0 +1,15 @@
+{
+  "modules": [
+    { "id": "design", "title": "设计", "goal": "明确研究问题、数据来源、分析范围和交付标准，形成整体分析方案。" },
+    { "id": "processing", "title": "处理", "goal": "确认数据质量与处理规则，生成经过验证的分析数据。" },
+    { "id": "analysis", "title": "分析", "goal": "比较适用的分析方法，依据已确认方案完成正式分析。" },
+    { "id": "results", "title": "结果整理", "goal": "汇总分析产物，核对指标、来源、完整性和解释边界。" },
+    { "id": "presentation", "title": "呈现", "goal": "选择合适的图表与报告形式，完成可追溯的结果呈现。" }
+  ],
+  "stages": [
+    { "id": "research", "title": "调研", "directory": "research", "kind": "reference", "goal": "收集依据与候选方案，记录来源、适用条件和推荐方案。", "process": "围绕当前模块目标开展调研，将依据和方案写入本节点目录。" },
+    { "id": "test", "title": "测试", "directory": "test", "kind": "operation", "goal": "用样例或小规模数据独立验证当前模块方案，记录检查结果和采用依据。", "process": "围绕当前模块目标执行小规模验证，记录方法、参数、检查结果和局限；可使用已有调研产物，但不以其完成为前提。" },
+    { "id": "execute", "title": "执行", "directory": "excute", "kind": "operation", "goal": "围绕当前模块目标独立执行已明确的工作，记录输入、代码、参数与输出产物。", "process": "按当前模块目标和上游模块结论执行；需要尚未确认的方案时，记录原因并等待用户处理。" },
+    { "id": "conclusion", "title": "结果与结论", "directory": "conclusion", "kind": "conclusion", "goal": "整理本模块结果与结论，复核完整性，并列出交付内容和未解决问题。", "process": "汇总调研、测试和执行产物，分别保存 result.md 和 conclusion.md，并回链来源。" }
+  ]
+}

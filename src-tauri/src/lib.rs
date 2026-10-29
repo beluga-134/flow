@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -15,8 +17,11 @@ use tauri::ipc::{Channel, Response};
 use tauri::State;
 
 const MAX_FLOW_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_NODE_RESULT_BYTES: u64 = 2 * 1024 * 1024;
 const WORKSPACE_DATA_DIRECTORY: &str = ".flow-canvas";
 const WORKSPACE_FLOW_FILE: &str = "flow.json";
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const CODEX_MICU_COMMAND: &str = r#"if ! type nvm >/dev/null 2>&1; then case "$(node -v 2>/dev/null)" in v22.*) nvm() { return 0; } ;; *) printf 'codex_micu requires Node 22 or nvm\n' >&2; exit 127 ;; esac; fi; codex_micu -C "$PWD" -s workspace-write -a never --no-alt-screen; printf '\n[Flow Canvas] Codex 会话已结束，已返回终端。退出终端请按 Ctrl-D。\n' >&2; exec bash -i"#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +52,12 @@ struct WorkspaceSnapshot {
     name: String,
     flow_path: String,
     document: Option<FlowDocument>,
+}
+
+#[derive(Debug, Serialize)]
+struct NodeResults {
+    result: Option<String>,
+    conclusion: Option<String>,
 }
 
 struct AgentSession {
@@ -142,13 +153,157 @@ fn workspace_flow_path(workspace: &Path) -> PathBuf {
 }
 
 fn initialize_workspace_directories(workspace: &Path) -> Result<(), String> {
-    let data = workspace_data_directory(workspace);
-    for directory in [data.clone(), data.join("logs"), data.join("artifacts")] {
-        fs::create_dir_all(&directory).map_err(|error| {
-            format!("无法初始化工作区目录 {}：{error}", display_path(&directory))
-        })?;
+    for directory in [
+        ".flow-canvas",
+        ".flow-canvas/logs",
+        ".flow-canvas/artifacts",
+    ] {
+        prepare_workspace_directory(workspace, directory)?;
     }
     Ok(())
+}
+
+fn prepare_workspace_directory(workspace: &Path, path: &str) -> Result<PathBuf, String> {
+    if path.trim().is_empty() || path.chars().count() > 4096 || path.chars().any(char::is_control) {
+        return Err("节点目录路径无效".into());
+    }
+    let normalized = path.replace('\\', "/");
+    if normalized.split('/').any(|part| part == "..") {
+        return Err("节点目录不能包含上级路径".into());
+    }
+    let requested = PathBuf::from(&normalized);
+    let visible_workspace = PathBuf::from(display_path(workspace));
+    let relative = if requested.is_absolute() {
+        requested
+            .strip_prefix(workspace)
+            .or_else(|_| requested.strip_prefix(&visible_workspace))
+            .map_err(|_| "节点目录必须位于当前工作区内".to_string())?
+    } else {
+        requested.as_path()
+    };
+    let mut directory = workspace.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            if component == Component::CurDir {
+                continue;
+            }
+            return Err("节点目录必须使用工作区内路径".into());
+        };
+        if name.to_string_lossy().contains(':') {
+            return Err("节点目录名称无效".into());
+        }
+        directory.push(name);
+        match fs::symlink_metadata(&directory) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(format!(
+                        "节点目录不能是符号链接或文件：{}",
+                        display_path(&directory)
+                    ));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&directory).map_err(|error| {
+                    format!("无法创建节点目录 {}：{error}", display_path(&directory))
+                })?;
+            }
+            Err(error) => return Err(format!("无法访问节点目录：{error}")),
+        }
+        let canonical =
+            fs::canonicalize(&directory).map_err(|error| format!("无法解析节点目录：{error}"))?;
+        if !canonical.starts_with(workspace) {
+            return Err("节点目录位于当前工作区之外".into());
+        }
+        directory = canonical;
+    }
+    Ok(directory)
+}
+
+#[derive(Deserialize)]
+struct FrameworkTemplate {
+    modules: Vec<FrameworkModule>,
+    stages: Vec<FrameworkStage>,
+}
+
+#[derive(Deserialize)]
+struct FrameworkModule {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct FrameworkStage {
+    directory: String,
+}
+
+fn initialize_framework_directories(workspace: &Path) -> Result<(), String> {
+    let template: FrameworkTemplate =
+        serde_json::from_str(include_str!("../../src/framework-template.json"))
+            .map_err(|error| format!("分析框架定义无效：{error}"))?;
+    for stage in template.stages {
+        for module in &template.modules {
+            prepare_workspace_directory(workspace, &format!("{}/{}", stage.directory, module.id))?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn initialize_framework(workspace: String) -> Result<(), String> {
+    let workspace = resolve_workspace(&workspace)?;
+    initialize_framework_directories(&workspace)
+}
+
+#[tauri::command]
+fn prepare_node_directory(workspace: String, path: String) -> Result<String, String> {
+    let workspace = resolve_workspace(&workspace)?;
+    prepare_workspace_directory(&workspace, &path).map(|directory| display_path(&directory))
+}
+
+fn read_node_result_file(
+    workspace: &Path,
+    directory: &Path,
+    name: &str,
+) -> Result<Option<String>, String> {
+    let requested = directory.join(name);
+    let metadata = match fs::symlink_metadata(&requested) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("无法访问节点结果 {name}：{error}")),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!("节点结果 {name} 必须是普通文件"));
+    }
+    if metadata.len() > MAX_NODE_RESULT_BYTES {
+        return Err(format!("节点结果 {name} 超过 2 MB"));
+    }
+    let target = workspace_target(workspace, &display_path(&requested))?;
+    let file =
+        fs::File::open(target).map_err(|error| format!("无法打开节点结果 {name}：{error}"))?;
+    let mut content = String::new();
+    file.take(MAX_NODE_RESULT_BYTES + 1)
+        .read_to_string(&mut content)
+        .map_err(|error| format!("无法读取节点结果 {name}，请使用 UTF-8 文本：{error}"))?;
+    if content.len() as u64 > MAX_NODE_RESULT_BYTES {
+        return Err(format!("节点结果 {name} 超过 2 MB"));
+    }
+    Ok(Some(content))
+}
+
+#[tauri::command]
+fn read_node_results(workspace: String, path: String) -> Result<NodeResults, String> {
+    let workspace = resolve_workspace(&workspace)?;
+    let normalized = path.replace('\\', "/");
+    if normalized.split('/').any(|part| part == "..") {
+        return Err("节点目录不能包含上级路径".into());
+    }
+    let directory = workspace_target(&workspace, &normalized)?;
+    if !directory.is_dir() {
+        return Err("节点结果目录不是文件夹".into());
+    }
+    Ok(NodeResults {
+        result: read_node_result_file(&workspace, &directory, "result.md")?,
+        conclusion: read_node_result_file(&workspace, &directory, "conclusion.md")?,
+    })
 }
 
 fn load_flow_file(requested: &Path) -> Result<FlowDocument, String> {
@@ -203,6 +358,7 @@ fn save_flow_file(requested: &Path, document: &FlowDocument) -> Result<(), Strin
 fn open_workspace(path: String) -> Result<WorkspaceSnapshot, String> {
     let workspace = resolve_workspace(&path)?;
     initialize_workspace_directories(&workspace)?;
+    initialize_framework_directories(&workspace)?;
     let flow_path = workspace_flow_path(&workspace);
     let document = if flow_path.exists() {
         Some(load_flow_file(&flow_path)?)
@@ -466,17 +622,21 @@ fn agent_codex_session(
     let workspace = resolve_workspace(&workspace)?;
     let query = codex_session_query(opened_at);
     #[cfg(target_os = "windows")]
-    let output = Command::new("wsl.exe")
-        .args([
-            "--cd",
-            &display_path(&workspace),
-            "--exec",
-            "bash",
-            "-lic",
-            &query,
-        ])
-        .output()
-        .map_err(|error| format!("无法查询 WSL Codex 会话：{error}"))?;
+    let output = {
+        let mut command = Command::new("wsl.exe");
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
+            .args([
+                "--cd",
+                &display_path(&workspace),
+                "--exec",
+                "bash",
+                "-lic",
+                &query,
+            ])
+            .output()
+            .map_err(|error| format!("无法查询 WSL Codex 会话：{error}"))?
+    };
     #[cfg(not(target_os = "windows"))]
     let output = Command::new("bash")
         .args(["-lic", &query])
@@ -567,8 +727,14 @@ fn launch_plugin(
     workspace: String,
     path: String,
 ) -> Result<(), String> {
-    let workspace = resolve_workspace(&workspace)?;
-    let target = workspace_target(&workspace, &path)?;
+    let target = if workspace.trim().is_empty() {
+        // 文档模式:无工作区上下文,目标为绝对路径或 URL,原样使用
+        PathBuf::from(&path)
+    } else {
+        let workspace = resolve_workspace(&workspace)?;
+        workspace_target(&workspace, &path)?
+    };
+    log::info!("[plugin] launch_plugin target={path} workspace={workspace}");
     if let Some(executable) = executable.filter(|value| !value.trim().is_empty()) {
         let executable = PathBuf::from(executable);
         Command::new(&executable)
@@ -582,17 +748,95 @@ fn launch_plugin(
     }
 }
 
+/* =============== 文档模式:只读画布文档的支撑命令 =============== */
+
+#[derive(Default)]
+struct StartupDocument(Option<String>);
+
+#[tauri::command]
+fn startup_document_arg(state: State<StartupDocument>) -> Option<String> {
+    state.0.clone()
+}
+
+#[tauri::command(async)]
+fn read_document_text(path: String) -> Result<String, String> {
+    let requested = Path::new(&path);
+    let metadata = fs::metadata(requested).map_err(|error| format!("无法读取画布文档：{error}"))?;
+    if !metadata.is_file() {
+        return Err("画布文档不是文件".into());
+    }
+    if metadata.len() > MAX_FLOW_BYTES {
+        return Err("画布文档不能超过 16 MB".into());
+    }
+    log::info!(
+        "[document] read_document_text path={path} bytes={}",
+        metadata.len()
+    );
+    fs::read_to_string(requested).map_err(|error| {
+        log::warn!("[document] read failed path={path} error={error}");
+        format!("无法以 UTF-8 读取画布文档：{error}")
+    })
+}
+
+#[tauri::command(async)]
+fn write_document_text(path: String, content: String) -> Result<(), String> {
+    let requested = Path::new(&path);
+    if !requested.is_file() {
+        return Err("画布文档不存在，无法保存".into());
+    }
+    let bytes = content.len() as u64;
+    if bytes > MAX_FLOW_BYTES {
+        return Err("画布文档内容超过 16 MB，无法保存".into());
+    }
+    log::info!("[document] write_document_text path={path} bytes={bytes}");
+    fs::write(requested, content).map_err(|error| {
+        log::warn!("[document] write failed path={path} error={error}");
+        format!("无法写入画布文档：{error}")
+    })
+}
+
 pub fn run() {
+    let startup = std::env::args()
+        .nth(1)
+        .filter(|value| !value.trim().is_empty());
+    // 日志:写到 exe 同级 logs/ 文件夹(便携版可直接查看),同时输出 stdout
+    let log_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("logs")))
+        .unwrap_or_else(|| std::env::temp_dir().join("flow-canvas-logs"));
+    let _ = fs::create_dir_all(&log_dir);
+    log::info!("[startup] log directory: {}", log_dir.display());
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Folder {
+                        path: log_dir.clone(),
+                        file_name: Some("flow".to_string()),
+                    }),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                ])
+                .level(log::LevelFilter::Info)
+                .max_file_size(512_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                .build(),
+        )
         .manage(AgentState::default())
+        .manage(StartupDocument(startup))
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             open_workspace,
+            initialize_framework,
+            prepare_node_directory,
+            read_node_results,
             startup_workspace,
             save_workspace_flow,
             scan_workspace,
             validate_workspace_target,
             launch_plugin,
+            read_document_text,
+            write_document_text,
+            startup_document_arg,
             agent_open,
             agent_codex_session,
             agent_write,
@@ -623,6 +867,17 @@ mod tests {
         let snapshot = open_workspace(root.to_string_lossy().into_owned()).unwrap();
         assert!(root.join(".flow-canvas/logs").is_dir());
         assert!(root.join(".flow-canvas/artifacts").is_dir());
+        for stage in ["research", "test", "excute", "conclusion"] {
+            for module in [
+                "design",
+                "processing",
+                "analysis",
+                "results",
+                "presentation",
+            ] {
+                assert!(root.join(stage).join(module).is_dir());
+            }
+        }
         assert!(snapshot.document.is_none());
 
         let document = FlowDocument {
@@ -647,6 +902,186 @@ mod tests {
         fs::create_dir_all(&outside).unwrap();
         let canonical = fs::canonicalize(&root).unwrap();
         assert!(workspace_target(&canonical, &outside.to_string_lossy()).is_err());
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn framework_initialization_preserves_existing_work() {
+        let root = temporary_directory("framework-repeat");
+        fs::create_dir_all(&root).unwrap();
+        let workspace = root.to_string_lossy().into_owned();
+        initialize_framework(workspace.clone()).unwrap();
+        let result = root.join("research/design/notes.md");
+        fs::write(&result, "existing research").unwrap();
+        initialize_framework(workspace).unwrap();
+        assert_eq!(fs::read_to_string(result).unwrap(), "existing research");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn opening_existing_flow_preserves_its_graph_and_directories() {
+        let root = temporary_directory("existing-flow");
+        fs::create_dir_all(root.join(".flow-canvas")).unwrap();
+        let document = FlowDocument {
+            schema_version: 1,
+            name: "existing flow".into(),
+            nodes: serde_json::json!([{ "id": "custom-node", "data": { "title": "Custom" } }]),
+            edges: serde_json::json!([]),
+            files: None,
+            activities: None,
+        };
+        let flow_path = root.join(".flow-canvas/flow.json");
+        save_flow_file(&flow_path, &document).unwrap();
+        let original = fs::read(&flow_path).unwrap();
+        let snapshot = open_workspace(root.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(snapshot.document.unwrap().nodes, document.nodes);
+        assert_eq!(fs::read(&flow_path).unwrap(), original);
+        assert!(root.join("research/design").is_dir());
+        assert!(root.join("test/design").is_dir());
+        assert!(root.join("excute/design").is_dir());
+        assert!(root.join("conclusion/design").is_dir());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn node_directory_creation_is_idempotent_and_rejects_escape() {
+        let root = temporary_directory("node-directory");
+        let outside = temporary_directory("node-outside");
+        fs::create_dir_all(&root).unwrap();
+        let workspace = root.to_string_lossy().into_owned();
+        let nested = "test/analysis/custom-method".to_string();
+        let created = prepare_node_directory(workspace.clone(), nested.clone()).unwrap();
+        assert!(Path::new(&created).is_dir());
+        assert_eq!(
+            prepare_node_directory(workspace.clone(), nested).unwrap(),
+            created
+        );
+        assert_eq!(
+            prepare_node_directory(workspace.clone(), created.clone()).unwrap(),
+            created
+        );
+        assert!(prepare_node_directory(workspace.clone(), "../outside".into()).is_err());
+        assert!(prepare_node_directory(workspace.clone(), "test/../../outside".into()).is_err());
+        assert!(prepare_node_directory(workspace.clone(), "..\\outside".into()).is_err());
+        assert!(prepare_node_directory(workspace.clone(), "".into()).is_err());
+        assert!(
+            prepare_node_directory(workspace.clone(), outside.to_string_lossy().into_owned())
+                .is_err()
+        );
+        assert!(!outside.exists());
+        fs::write(root.join("occupied"), "keep").unwrap();
+        assert!(prepare_node_directory(workspace, "occupied/subdir".into()).is_err());
+        assert_eq!(fs::read_to_string(root.join("occupied")).unwrap(), "keep");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn node_results_read_optional_utf8_files_without_modifying_them() {
+        let root = temporary_directory("node-results");
+        let directory = root.join("conclusion/analysis");
+        fs::create_dir_all(&directory).unwrap();
+        let workspace = root.to_string_lossy().into_owned();
+        let empty = read_node_results(workspace.clone(), "conclusion/analysis".into()).unwrap();
+        assert!(empty.result.is_none());
+        assert!(empty.conclusion.is_none());
+        fs::write(directory.join("result.md"), "# 结果\n已完成分析。\n").unwrap();
+        let partial = read_node_results(workspace.clone(), "conclusion/analysis".into()).unwrap();
+        assert_eq!(partial.result.as_deref(), Some("# 结果\n已完成分析。\n"));
+        assert!(partial.conclusion.is_none());
+        fs::write(directory.join("conclusion.md"), "# 结论\n需要复核。\n").unwrap();
+        let complete =
+            read_node_results(workspace.clone(), directory.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(complete.result, partial.result);
+        assert_eq!(complete.conclusion.as_deref(), Some("# 结论\n需要复核。\n"));
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
+        assert_eq!(
+            fs::read_to_string(directory.join("conclusion.md")).unwrap(),
+            "# 结论\n需要复核。\n"
+        );
+        assert!(read_node_results(workspace, "missing".into()).is_err());
+        assert!(!root.join("missing").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn node_results_reject_escape_oversized_files_and_invalid_text() {
+        let root = temporary_directory("node-results-invalid");
+        let outside = temporary_directory("node-results-outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let workspace = root.to_string_lossy().into_owned();
+        assert!(read_node_results(workspace.clone(), "../outside".into()).is_err());
+        assert!(read_node_results(workspace.clone(), "..\\outside".into()).is_err());
+        assert!(
+            read_node_results(workspace.clone(), outside.to_string_lossy().into_owned()).is_err()
+        );
+        let result = root.join("result.md");
+        fs::File::create(&result)
+            .unwrap()
+            .set_len(MAX_NODE_RESULT_BYTES + 1)
+            .unwrap();
+        assert!(read_node_results(workspace.clone(), ".".into()).is_err());
+        fs::write(&result, [0xff, 0xfe]).unwrap();
+        assert!(read_node_results(workspace.clone(), ".".into()).is_err());
+        assert!(read_node_results(workspace, "result.md".into()).is_err());
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn node_results_reject_links_outside_workspace() {
+        let root = temporary_directory("node-results-link");
+        let outside = temporary_directory("node-results-link-outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("result.md"), "external result").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("linked")).unwrap();
+        let workspace = root.to_string_lossy().into_owned();
+        assert!(read_node_results(workspace.clone(), "linked".into()).is_err());
+        std::os::unix::fs::symlink(outside.join("result.md"), root.join("result.md")).unwrap();
+        assert!(read_node_results(workspace.clone(), ".".into()).is_err());
+        fs::remove_file(root.join("result.md")).unwrap();
+        std::os::unix::fs::symlink(outside.join("missing.md"), root.join("conclusion.md")).unwrap();
+        assert!(read_node_results(workspace, ".".into()).is_err());
+        assert_eq!(
+            fs::read_to_string(outside.join("result.md")).unwrap(),
+            "external result"
+        );
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn framework_and_node_directories_reject_symbolic_links() {
+        let root = temporary_directory("symlink-root");
+        let outside = temporary_directory("symlink-outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("research")).unwrap();
+        let workspace = root.to_string_lossy().into_owned();
+        assert!(initialize_framework(workspace.clone()).is_err());
+        assert!(prepare_node_directory(workspace.clone(), "research/design/new".into()).is_err());
+        assert!(!outside.join("design").exists());
+        std::os::unix::fs::symlink(outside.join("missing"), root.join("dangling")).unwrap();
+        assert!(prepare_node_directory(workspace, "dangling/child".into()).is_err());
+        assert!(!outside.join("missing").exists());
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_metadata_rejects_symbolic_links() {
+        let root = temporary_directory("metadata-root");
+        let outside = temporary_directory("metadata-outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(".flow-canvas")).unwrap();
+        assert!(open_workspace(root.to_string_lossy().into_owned()).is_err());
+        assert!(!outside.join("logs").exists());
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(outside).unwrap();
     }

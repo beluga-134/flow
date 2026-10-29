@@ -14,6 +14,37 @@ export async function chooseDirectory(defaultPath?: string): Promise<string | nu
   return (await open({ directory: true, multiple: false, defaultPath })) as string | null;
 }
 
+export async function chooseDocumentFile(defaultPath?: string): Promise<string | null> {
+  if (!isTauri()) return null;
+  return (await open({
+    multiple: false,
+    directory: false,
+    defaultPath,
+    filters: [{ name: "画布文档", extensions: ["canvas", "json"] }],
+  })) as string | null;
+}
+
+export async function readDocumentText(path: string): Promise<string> {
+  return invoke<string>("read_document_text", { path });
+}
+
+export async function startupDocumentArg(): Promise<string | null> {
+  if (!isTauri()) return null;
+  return invoke<string | null>("startup_document_arg");
+}
+
+export async function launchPluginDocument(executable: string | undefined | null, path: string): Promise<void> {
+  if (!isTauri()) {
+    window.alert(`文档模式浏览器预览不会启动外部程序。\n目标:${path}`);
+    return;
+  }
+  await invoke("launch_plugin", { executable: executable ?? null, workspace: "", path });
+}
+
+export async function writeDocumentText(path: string, content: string): Promise<void> {
+  await invoke("write_document_text", { path, content });
+}
+
 export async function openWorkspace(path: string): Promise<WorkspaceSnapshot> {
   return invoke<WorkspaceSnapshot>("open_workspace", { path });
 }
@@ -21,6 +52,20 @@ export async function openWorkspace(path: string): Promise<WorkspaceSnapshot> {
 export async function startupWorkspace(): Promise<WorkspaceSnapshot | null> {
   return invoke<WorkspaceSnapshot | null>("startup_workspace");
 }
+
+export async function initializeFrameworkDirectories(workspace: string): Promise<void> {
+  await invoke("initialize_framework", { workspace });
+}
+
+export async function prepareNodeDirectory(workspace: string, path: string): Promise<string> {
+  return invoke<string>("prepare_node_directory", { workspace, path });
+}
+
+export async function readNodeResults(workspace: string, path: string): Promise<{ result: string | null; conclusion: string | null }> {
+  return invoke("read_node_results", { workspace, path });
+}
+
+let saveQueue: Promise<unknown> = Promise.resolve();
 
 export async function saveWorkspaceFlow(workspace: string, flowDocument: FlowDocument): Promise<string> {
   if (!isTauri()) {
@@ -33,7 +78,9 @@ export async function saveWorkspaceFlow(workspace: string, flowDocument: FlowDoc
     URL.revokeObjectURL(url);
     return anchor.download;
   }
-  return invoke<string>("save_workspace_flow", { workspace, document: flowDocument });
+  const saved = saveQueue.catch(() => undefined).then(() => invoke<string>("save_workspace_flow", { workspace, document: flowDocument }));
+  saveQueue = saved;
+  return saved;
 }
 
 export async function scanWorkspace(workspace: string): Promise<WorkspaceFileRecord[]> {

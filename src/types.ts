@@ -1,9 +1,11 @@
 import type { Edge, Node } from "@xyflow/react";
 
-export type NodeKind = "project" | "artifact" | "operation" | "conclusion" | "reference";
+export type NodeKind = "project" | "artifact" | "operation" | "conclusion" | "reference" | "note";
 export type NodeStatus = "idle" | "running" | "success" | "error";
 export type AgentNodeStatus = "idle" | "opening" | "connected" | "waiting" | "exited" | "error";
 export type Relation = "transforms" | "depends_on" | "supports" | "contradicts";
+export type FlowStage = "research" | "test" | "execute" | "conclusion" | "formal" | "review";
+export type AiMode = "off" | "assist" | "auto";
 
 export interface FlowNodeData extends Record<string, unknown> {
   kind: NodeKind;
@@ -16,6 +18,14 @@ export interface FlowNodeData extends Record<string, unknown> {
   process: string;
   references: string;
   pluginId?: string;
+  stage?: FlowStage;
+  aiMode?: AiMode;
+  pruned?: boolean;
+  frameworkRole?: "module" | "stage";
+  moduleId?: string;
+  parentNodeId?: string;
+  goal?: string;
+  result?: string;
   status: NodeStatus;
   agentStatus?: AgentNodeStatus;
   agentSessionId?: number;

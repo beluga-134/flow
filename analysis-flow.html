@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>分析 Flow · 节点级 AI</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, "Segoe UI", system-ui, sans-serif; background: #0f1823; color: #dce8f4; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 980px; background: #0f1823; }
+    header { display: flex; align-items: center; justify-content: space-between; height: 64px; padding: 0 28px; border-bottom: 1px solid #26384b; background: #121c28; }
+    h1 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: .02em; }
+    header span { color: #7f94aa; font-size: 11px; }
+    main { padding: 26px 28px 34px; }
+    .legend { display: flex; gap: 18px; align-items: center; margin-bottom: 18px; color: #8ea2b8; font-size: 11px; }
+    .legend span { display: inline-flex; align-items: center; gap: 7px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .dot.plan { background: #78a6ed; } .dot.module { background: #7894bd; } .dot.life { background: #65b991; } .dot.meta { background: #d88b63; }
+    .panel { border: 1px solid #2a3d53; border-radius: 8px; padding: 18px; background: #121e2b; box-shadow: 0 16px 34px rgba(0,0,0,.2); overflow: auto; }
+    .mermaid { min-width: 1280px; text-align: center; }
+    .source { margin-top: 18px; padding: 13px 15px; border: 1px solid #26384b; border-radius: 6px; color: #8fa5bc; background: #0b121b; font: 11px/1.6 Consolas, monospace; white-space: pre-wrap; }
+    summary { cursor: pointer; color: #9bb3ce; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <header><h1>分析 Flow · 节点级 AI</h1><span>探索搭建 → 方案冻结 → 可复现执行</span></header>
+  <main>
+    <div class="legend">
+      <span><i class="dot plan"></i>方案与约束</span>
+      <span><i class="dot module"></i>分析模块</span>
+      <span><i class="dot life"></i>节点生命周期</span>
+      <span><i class="dot meta"></i>AI 与剪枝</span>
+    </div>
+    <section class="panel">
+      <div class="mermaid">
+flowchart LR
+  subgraph PLAN[方案与约束]
+    R["ref / 分析方案"]
+    R1["目标、问题与验收标准"]
+    R2["数据来源、版本与范围"]
+    R --> R1
+    R --> R2
+  end
+  subgraph PIPE[模块化分析 Flow]
+    D["数据模块"] --> P["数据处理"] --> A["分析方法"] --> O["结果整理"] --> V["结果呈现"]
+  end
+  R --> D
+  R --> A
+  subgraph LOOP[每个节点统一生命周期]
+    S1["调研 / 设计"] --> S2["测试 / 比较"] --> S3["方案确认"] --> S4["正式执行"] --> S5["复核 / 归档"]
+    S5 -. "发现问题，回到对应节点" .-> S1
+  end
+  P -. "节点阶段" .-> S1
+  A -. "节点阶段" .-> S1
+  V -. "节点阶段" .-> S1
+  AI["节点级 AI 开关<br/>关闭 / 辅助 / 自动"] -. "可选接入" .-> S1
+  CUT["剪枝与影响分析<br/>保留原因、版本、下游重跑"] -. "变更传播" .-> PIPE
+  classDef plan fill:#243b5d,stroke:#78a6ed,color:#e7f0ff
+  classDef module fill:#263449,stroke:#7894bd,color:#e7edf6
+  classDef life fill:#203b34,stroke:#65b991,color:#e5f5ec
+  classDef meta fill:#3a2b2b,stroke:#d88b63,color:#fff0e8
+  class R,R1,R2 plan
+  class D,P,A,O,V module
+  class S1,S2,S3,S4,S5 life
+  class AI,CUT meta
+      </div>
+    </section>
+    <details class="source"><summary>查看 Mermaid 源码</summary>
+flowchart LR
+  R["ref / 分析方案"] --> D["数据模块"] --> P["数据处理"] --> A["分析方法"] --> O["结果整理"] --> V["结果呈现"]
+  P -. "节点阶段" .-> S1["调研 / 设计"] --> S2["测试 / 比较"] --> S3["方案确认"] --> S4["正式执行"] --> S5["复核 / 归档"]
+  S5 -. "发现问题，回到对应节点" .-> S1
+  AI["节点级 AI：关闭 / 辅助 / 自动"] -. "可选接入" .-> S1
+  CUT["剪枝与影响分析"] -. "变更传播" .-> P
+    </details>
+  </main>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({ startOnLoad: true, securityLevel: "strict", theme: "base", themeVariables: { background: "#121e2b", primaryTextColor: "#e7edf6", lineColor: "#7894bd", fontFamily: "Inter, Segoe UI, sans-serif" } });
+  </script>
+</body>
+</html>
